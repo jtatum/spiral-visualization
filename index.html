@@ -65,6 +65,8 @@
     .slice-stats { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px;
       font-size: 11px; color: var(--dim); }
     .slice-stats b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .mlabel { display: block; font-size: 10px; color: var(--dim); letter-spacing: .06em;
+      text-transform: uppercase; margin: 12px 0 4px; }
   </style>
   <script type="importmap">
   {
@@ -114,11 +116,22 @@
           <div class="ctrl"><span>axis az</span><input type="range" id="sp-az" min="0" max="360" value="0"><span class="v" id="vp-az">0°</span></div>
           <div class="ctrl"><span>axis el</span><input type="range" id="sp-el" min="-90" max="90" value="90"><span class="v" id="vp-el">90°</span></div>
           <div class="ctrl"><span>turns</span><input type="range" id="sp-turns" min="1" max="40" value="12"><span class="v" id="vp-turns">12</span></div>
+          <div class="ctrl"><span>radius</span><input type="range" id="sp-rad" min="0.6" max="2.4" step="0.05" value="1.6"><span class="v" id="vp-rad">1.60</span></div>
+          <div class="ctrl"><span>reach</span><input type="range" id="sp-reach" min="0.6" max="3" step="0.05" value="1.3"><span class="v" id="vp-reach">1.30</span></div>
         </div>
         <canvas class="chart" id="unwind"></canvas>
         <div class="slice-stats">
           <span>unwound, pole&nbsp;&rarr;&nbsp;pole · <b id="sp-info">—</b></span>
         </div>
+
+        <span class="mlabel">turns, rewound · each row = one turn</span>
+        <canvas class="chart" id="sp-heat"></canvas>
+
+        <span class="mlabel">around the axis · looking down the screw</span>
+        <canvas class="chart" id="sp-polar"></canvas>
+
+        <span class="mlabel">thread temperature distribution</span>
+        <canvas class="chart" id="sp-hist"></canvas>
       </div>
 
       <div class="section">
@@ -740,9 +753,11 @@
           _pt = new THREE.Vector3();
 
     const spAz = document.getElementById('sp-az'), spEl = document.getElementById('sp-el'),
-          spTurns = document.getElementById('sp-turns'), spShow = document.getElementById('sp-show');
+          spTurns = document.getElementById('sp-turns'), spShow = document.getElementById('sp-show'),
+          spRad = document.getElementById('sp-rad'), spReach = document.getElementById('sp-reach');
     const vpAz = document.getElementById('vp-az'), vpEl = document.getElementById('vp-el'),
-          vpTurns = document.getElementById('vp-turns'), spInfo = document.getElementById('sp-info');
+          vpTurns = document.getElementById('vp-turns'), spInfo = document.getElementById('sp-info'),
+          vpRad = document.getElementById('vp-rad'), vpReach = document.getElementById('vp-reach');
 
     let spiralCount = 0, spiralTurns = 12;
 
@@ -761,7 +776,8 @@
 
       const nPts = Math.max(200, Math.min(MAXP, Math.round(N * 80)));
       spiralCount = nPts;
-      const R_OUT = 1.6, H = 1.3; // consistent screw radius + axial half-length
+      const R_OUT = +spRad.value, H = +spReach.value; // consistent radius + axial half-length
+      vpRad.textContent = R_OUT.toFixed(2); vpReach.textContent = H.toFixed(2);
 
       for (let i = 0; i < nPts; i++) {
         const s = i / (nPts - 1);
@@ -804,8 +820,9 @@
       axisGeo.attributes.position.needsUpdate = true;
       axisGeo.computeBoundingSphere();
 
-      spInfo.textContent = `${N} turns · ${nPts} samples`;
-      drawUnwound();
+      const latLimit = Math.atan2(H, R_OUT) * 180 / Math.PI;
+      spInfo.textContent = `${N} turns · covers ±${latLimit.toFixed(0)}° latitude`;
+      drawSpiralCharts();
     }
 
     function drawUnwound() {
@@ -845,6 +862,85 @@
       ctx.fillText(dMin.toFixed(0) + '°', padL - 4, padT + plotH);
     }
 
+    function drawSpiralCharts() {
+      drawUnwound();
+      drawTurnHeat();
+      drawPolar();
+      drawThreadHist();
+    }
+
+    // each row is one turn of the screw, columns sweep angle, color = temp
+    function drawTurnHeat() {
+      const { ctx, w, h } = setup2d('sp-heat', 130);
+      const N = spiralTurns;
+      const cols = Math.max(1, Math.round(spiralCount / N));
+      const cw = w / cols, rh = h / N;
+      for (let i = 0; i < spiralCount; i++) {
+        const s = i / (spiralCount - 1);
+        let turn = Math.floor(s * N); if (turn >= N) turn = N - 1;
+        const frac = s * N - turn;
+        let col = Math.floor(frac * cols); if (col >= cols) col = cols - 1;
+        ctx.fillStyle = cssColorForNorm(spiralNorm[i]);
+        ctx.fillRect(col * cw, turn * rh, Math.ceil(cw), Math.ceil(rh));
+      }
+    }
+
+    // looking down the axis: the spiral from center outward, rotating with it
+    function drawPolar() {
+      const { ctx, w, h } = setup2d('sp-polar', 200);
+      const cx = w / 2, cy = h / 2;
+      const rmax = Math.min(w, h) / 2 - 8, rmin = rmax * 0.16;
+      ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+      for (const f of [0.5, 1]) {
+        ctx.beginPath(); ctx.arc(cx, cy, rmin + (rmax - rmin) * f, 0, 2 * Math.PI); ctx.stroke();
+      }
+      ctx.lineWidth = 1.6;
+      let prevX = 0, prevY = 0;
+      for (let i = 0; i < spiralCount; i++) {
+        const s = i / (spiralCount - 1);
+        const ang = 2 * Math.PI * spiralTurns * s + screwSpin; // azimuth around axis
+        const r = rmin + (rmax - rmin) * s;
+        const x = cx + Math.cos(ang) * r, y = cy + Math.sin(ang) * r;
+        if (i > 0) {
+          ctx.strokeStyle = cssColorForNorm(spiralNorm[i]);
+          ctx.beginPath(); ctx.moveTo(prevX, prevY); ctx.lineTo(x, y); ctx.stroke();
+        }
+        prevX = x; prevY = y;
+      }
+    }
+
+    // live distribution of just the thread's current temperatures
+    function drawThreadHist() {
+      const { ctx, w, h } = setup2d('sp-hist', 110);
+      const padL = 30, padB = 18, padT = 8, padR = 8;
+      const plotW = w - padL - padR, plotH = h - padT - padB;
+      const nb = 28;
+      const counts = new Array(nb).fill(0);
+      for (let i = 0; i < spiralCount; i++) {
+        let b = Math.floor((spiralDeg[i] - dMin) / (dMax - dMin) * nb);
+        if (b >= nb) b = nb - 1; if (b < 0) b = 0;
+        counts[b]++;
+      }
+      const maxC = Math.max(1, ...counts);
+      const bw = plotW / nb;
+      for (let i = 0; i < nb; i++) {
+        const bh = (counts[i] / maxC) * plotH;
+        ctx.fillStyle = cssColorForNorm((i + 0.5) / nb);
+        ctx.fillRect(padL + i * bw, padT + plotH - bh, Math.max(1, bw - 1), bh);
+      }
+      ctx.strokeStyle = AXIS; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH);
+      ctx.stroke();
+      axisText(ctx);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      for (const f of [0, 0.5, 1]) {
+        ctx.fillText((dMin + f * (dMax - dMin)).toFixed(0) + '°', padL + f * plotW, padT + plotH + 4);
+      }
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(maxC), padL - 4, padT + 4);
+    }
+
     // re-sample temperature at the screw's current (spun) orientation, recolor
     // the thread, and redraw the unwound graph
     const _qSpin = new THREE.Quaternion(), _v = new THREE.Vector3();
@@ -859,10 +955,10 @@
         spiralCol[i * 3] = rgb[0]; spiralCol[i * 3 + 1] = rgb[1]; spiralCol[i * 3 + 2] = rgb[2];
       }
       spiralGeo.attributes.color.needsUpdate = true;
-      drawUnwound();
+      drawSpiralCharts();
     }
 
-    [spAz, spEl, spTurns].forEach((el) => el.addEventListener('input', recomputeSpiral));
+    [spAz, spEl, spTurns, spRad, spReach].forEach((el) => el.addEventListener('input', recomputeSpiral));
     spShow.addEventListener('change', () => { screwGroup.visible = spShow.checked; });
     recomputeSpiral();
   </script>
