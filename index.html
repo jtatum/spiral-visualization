@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rock · surface temperature</title>
+  <style>
+    :root {
+      --bg: #16161a;
+      --panel: #1d1d22;
+      --card: #25252c;
+      --line: #34343d;
+      --text: #d7dae0;
+      --dim: #8b8f99;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
+    #layout { display: flex; width: 100vw; height: 100vh; }
+
+    #viewer { position: relative; flex: 1 1 auto; min-width: 0; }
+    #app { display: block; width: 100%; height: 100%; }
+    #hint {
+      position: absolute; left: 12px; bottom: 12px;
+      font-size: 12px; color: var(--dim); user-select: none; pointer-events: none;
+    }
+
+    #panel {
+      flex: 0 0 380px; height: 100vh; overflow-y: auto;
+      background: var(--panel); border-left: 1px solid var(--line);
+      padding: 16px 16px 40px;
+    }
+    #panel h1 { font-size: 13px; font-weight: 600; letter-spacing: .04em;
+      text-transform: uppercase; color: var(--text); margin: 4px 0 2px; }
+    #panel .sub { font-size: 11px; color: var(--dim); margin: 0 0 16px; }
+
+    .section { margin: 0 0 22px; }
+    .section > h2 { font-size: 11px; font-weight: 600; letter-spacing: .06em;
+      text-transform: uppercase; color: var(--dim); margin: 0 0 8px; }
+
+    .cards { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+      padding: 8px 10px; }
+    .card .k { font-size: 10px; color: var(--dim); letter-spacing: .03em; }
+    .card .val { font-size: 18px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+    .card .val small { font-size: 11px; color: var(--dim); }
+
+    canvas.chart { display: block; width: 100%; border-radius: 6px; background: var(--card);
+      border: 1px solid var(--line); }
+
+    .hlegend { display: flex; align-items: center; gap: 8px; margin-top: 6px;
+      font-size: 10px; color: var(--dim); }
+    .hlegend .bar { flex: 1 1 auto; height: 10px; border-radius: 3px; border: 1px solid var(--line);
+      background: linear-gradient(to right,
+        rgb(26,41,107) 0%, rgb(79,110,181) 30%, rgb(158,156,133) 50%,
+        rgb(232,161,59) 70%, rgb(232,71,43) 85%, rgb(255,242,196) 100%); }
+
+    .toggle { display: flex; align-items: center; gap: 6px; font-size: 11px;
+      color: var(--dim); margin-bottom: 10px; cursor: pointer; }
+    .controls { display: grid; gap: 7px; margin-bottom: 10px; }
+    .ctrl { display: grid; grid-template-columns: 62px 1fr 46px; align-items: center;
+      gap: 8px; font-size: 11px; color: var(--dim); }
+    .ctrl input[type=range] { width: 100%; accent-color: #e8a13a; }
+    .ctrl .v { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+    .slice-stats { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px;
+      font-size: 11px; color: var(--dim); }
+    .slice-stats b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="layout">
+    <div id="viewer">
+      <canvas id="app"></canvas>
+      <div id="hint">drag to orbit · scroll to zoom</div>
+    </div>
+    <aside id="panel">
+      <h1>Surface Temperature</h1>
+      <p class="sub">per-vertex scalar field · n=<span id="nverts">—</span> samples</p>
+
+      <div class="section">
+        <h2>Summary</h2>
+        <div class="cards" id="cards"></div>
+      </div>
+
+      <div class="section">
+        <h2>Slice plane</h2>
+        <label class="toggle"><input type="checkbox" id="c-show" checked> show plane &amp; intersection</label>
+        <div class="controls">
+          <div class="ctrl"><span>azimuth</span><input type="range" id="c-az" min="0" max="360" value="0"><span class="v" id="v-az">0°</span></div>
+          <div class="ctrl"><span>elevation</span><input type="range" id="c-el" min="-90" max="90" value="0"><span class="v" id="v-el">0°</span></div>
+          <div class="ctrl"><span>offset</span><input type="range" id="c-off" min="-0.4" max="0.4" step="0.01" value="0"><span class="v" id="v-off">0.00</span></div>
+        </div>
+        <canvas class="chart" id="xsec"></canvas>
+        <div class="slice-stats">
+          <span>mean <b id="s-mean">—</b></span>
+          <span>min <b id="s-min">—</b></span>
+          <span>max <b id="s-max">—</b></span>
+          <span>length <b id="s-len">—</b></span>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>Distribution</h2>
+        <canvas class="chart" id="histo"></canvas>
+      </div>
+
+      <div class="section">
+        <h2>Cumulative distribution</h2>
+        <canvas class="chart" id="cdf"></canvas>
+      </div>
+
+      <div class="section">
+        <h2>Latitude profile</h2>
+        <canvas class="chart" id="lat"></canvas>
+      </div>
+
+      <div class="section">
+        <h2>Unwrapped surface map</h2>
+        <canvas class="chart" id="heat"></canvas>
+        <div class="hlegend">
+          <span id="hl-min">—</span>
+          <div class="bar"></div>
+          <span id="hl-max">—</span>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
+
+    // ====================================================================
+    // 3D rock
+    // ====================================================================
+    const canvas = document.getElementById('app');
+    const viewer = document.getElementById('viewer');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x16161a);
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    camera.position.set(3, 2, 4);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.6;
+
+    const noise = new ImprovedNoise();
+
+    function rockHeight(p) {
+      let h = 0, freq = 1.4, amp = 1.0;
+      for (let o = 0; o < 5; o++) {
+        h += amp * noise.noise(p.x * freq, p.y * freq, p.z * freq);
+        freq *= 2.1; amp *= 0.5;
+      }
+      const lobes = 0.6 * noise.noise(p.x * 0.7 + 10, p.y * 0.7, p.z * 0.7 - 5);
+      return 1.0 + 0.45 * h + lobes;
+    }
+
+    const geometry = new THREE.IcosahedronGeometry(1, 48);
+    const pos = geometry.attributes.position;
+
+    const dirs = [];
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).normalize();
+      dirs.push(v.clone());
+      const r = rockHeight(v);
+      pos.setXYZ(i, v.x * r, v.y * r, v.z * r);
+    }
+    pos.needsUpdate = true;
+    geometry.computeVertexNormals();
+
+    // ====================================================================
+    // surface temperature field
+    // ====================================================================
+    const spots = [];
+    const nSpots = 11;
+    for (let s = 0; s < nSpots; s++) {
+      spots.push({
+        dir: new THREE.Vector3().randomDirection(),
+        strength: (Math.random() * 2 - 1) * 2.0,
+        sigma: 0.14 + Math.random() * 0.30,
+      });
+    }
+
+    function temperatureAt(p) {
+      let base = 0, freq = 1.1, amp = 1.0;
+      for (let o = 0; o < 4; o++) {
+        base += amp * noise.noise(p.x * freq + 50, p.y * freq - 30, p.z * freq + 7);
+        freq *= 2.0; amp *= 0.5;
+      }
+      let t = 0.55 * base;
+      for (const sp of spots) {
+        const d2 = p.distanceToSquared(sp.dir);
+        t += sp.strength * Math.exp(-d2 / (2 * sp.sigma * sp.sigma));
+      }
+      return t;
+    }
+
+    const rawTemps = new Float32Array(pos.count);
+    let tMin = Infinity, tMax = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      const t = temperatureAt(dirs[i]);
+      rawTemps[i] = t;
+      if (t < tMin) tMin = t;
+      if (t > tMax) tMax = t;
+    }
+    const span = tMax - tMin || 1;
+
+    // map the unitless field onto a physical-ish range so charts have units
+    const TEMP_MIN = -20, TEMP_MAX = 110; // degrees C
+    const normLinear = (raw) => (raw - tMin) / span;        // 0..1
+    const toCelsius  = (raw) => TEMP_MIN + normLinear(raw) * (TEMP_MAX - TEMP_MIN);
+
+    // ====================================================================
+    // colormap (shared by rock, histogram bars, and heatmap)
+    // ====================================================================
+    const stops = [
+      [0.00, [0.10, 0.16, 0.42]],
+      [0.30, [0.31, 0.43, 0.71]],
+      [0.50, [0.62, 0.61, 0.52]],
+      [0.70, [0.91, 0.63, 0.23]],
+      [0.85, [0.91, 0.28, 0.17]],
+      [1.00, [1.00, 0.95, 0.77]],
+    ];
+    function colormap(x, out) {
+      x = Math.min(1, Math.max(0, x));
+      for (let i = 1; i < stops.length; i++) {
+        if (x <= stops[i][0]) {
+          const [x0, c0] = stops[i - 1];
+          const [x1, c1] = stops[i];
+          const f = (x - x0) / (x1 - x0);
+          out[0] = c0[0] + (c1[0] - c0[0]) * f;
+          out[1] = c0[1] + (c1[1] - c0[1]) * f;
+          out[2] = c0[2] + (c1[2] - c0[2]) * f;
+          return;
+        }
+      }
+      const last = stops[stops.length - 1][1];
+      out[0] = last[0]; out[1] = last[1]; out[2] = last[2];
+    }
+    // contrast push away from neutral (visual only) + colormap
+    const contrast = (n) => Math.min(1, Math.max(0, (n - 0.5) * 1.5 + 0.5));
+    function colorForNorm(n, out) { colormap(contrast(n), out); }
+    function cssColorForNorm(n) {
+      const c = [0, 0, 0]; colorForNorm(n, c);
+      return `rgb(${(c[0]*255)|0},${(c[1]*255)|0},${(c[2]*255)|0})`;
+    }
+
+    const colors = new Float32Array(pos.count * 3);
+    const rgb = [0, 0, 0];
+    for (let i = 0; i < pos.count; i++) {
+      colorForNorm(normLinear(rawTemps[i]), rgb);
+      colors[i * 3 + 0] = rgb[0];
+      colors[i * 3 + 1] = rgb[1];
+      colors[i * 3 + 2] = rgb[2];
+    }
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const material = new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.9, metalness: 0.0,
+    });
+    scene.add(new THREE.Mesh(geometry, material));
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const key = new THREE.DirectionalLight(0xffffff, 0.45);
+    key.position.set(5, 6, 4); scene.add(key);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.15);
+    fill.position.set(-4, -2, -3); scene.add(fill);
+
+    function resize() {
+      const w = viewer.clientWidth, h = viewer.clientHeight;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    renderer.setAnimationLoop(() => {
+      controls.update();
+      renderer.render(scene, camera);
+    });
+
+    // ====================================================================
+    // analytics panel
+    // ====================================================================
+    const tempsC = Float32Array.from(rawTemps, toCelsius);
+    document.getElementById('nverts').textContent = tempsC.length.toLocaleString();
+
+    // -- summary stats --
+    let sum = 0, dMin = Infinity, dMax = -Infinity;
+    for (const t of tempsC) { sum += t; if (t < dMin) dMin = t; if (t > dMax) dMax = t; }
+    const mean = sum / tempsC.length;
+    let varAcc = 0;
+    for (const t of tempsC) varAcc += (t - mean) ** 2;
+    const std = Math.sqrt(varAcc / tempsC.length);
+    // hot/cold surface fractions via normalized thirds
+    let hot = 0, cold = 0;
+    for (const raw of rawTemps) {
+      const n = normLinear(raw);
+      if (n > 0.66) hot++; else if (n < 0.33) cold++;
+    }
+    const pct = (x) => (100 * x / tempsC.length).toFixed(0) + '%';
+    const fmt = (x) => x.toFixed(1);
+
+    const cards = [
+      ['mean', fmt(mean), '°C'],
+      ['min', fmt(dMin), '°C'],
+      ['max', fmt(dMax), '°C'],
+      ['std dev', fmt(std), '°C'],
+      ['hot area', pct(hot), ''],
+      ['cold area', pct(cold), ''],
+    ];
+    document.getElementById('cards').innerHTML = cards.map(([k, val, u]) =>
+      `<div class="card"><div class="k">${k}</div><div class="val">${val}<small>${u ? ' ' + u : ''}</small></div></div>`
+    ).join('');
+
+    // -- hi-dpi canvas helper (returns ctx scaled to css pixels) --
+    const dpr = Math.min(window.devicePixelRatio, 2);
+    function setup2d(id, cssH) {
+      const c = document.getElementById(id);
+      const cssW = c.clientWidth || 348;
+      c.style.height = cssH + 'px';
+      c.width = cssW * dpr; c.height = cssH * dpr;
+      const ctx = c.getContext('2d');
+      ctx.scale(dpr, dpr);
+      return { ctx, w: cssW, h: cssH };
+    }
+    const AXIS = '#5a5a66', GRID = '#2e2e36', TEXT = '#9aa0ab';
+    function axisText(ctx) { ctx.fillStyle = TEXT; ctx.font = '10px ui-monospace, monospace'; }
+
+    // -- histogram --
+    (function histogram() {
+      const { ctx, w, h } = setup2d('histo', 150);
+      const padL = 30, padB = 18, padT = 8, padR = 8;
+      const plotW = w - padL - padR, plotH = h - padT - padB;
+      const nb = 30;
+      const counts = new Array(nb).fill(0);
+      for (const t of tempsC) {
+        let b = Math.floor((t - dMin) / (dMax - dMin) * nb);
+        if (b >= nb) b = nb - 1; if (b < 0) b = 0;
+        counts[b]++;
+      }
+      const maxC = Math.max(...counts);
+      const bw = plotW / nb;
+      for (let i = 0; i < nb; i++) {
+        const bh = (counts[i] / maxC) * plotH;
+        const x = padL + i * bw;
+        const norm = (i + 0.5) / nb; // 0..1 across data range
+        ctx.fillStyle = cssColorForNorm(norm);
+        ctx.fillRect(x, padT + plotH - bh, Math.max(1, bw - 1), bh);
+      }
+      // axes
+      ctx.strokeStyle = AXIS; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH);
+      ctx.stroke();
+      axisText(ctx);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      for (const f of [0, 0.5, 1]) {
+        const tval = dMin + f * (dMax - dMin);
+        ctx.fillText(tval.toFixed(0) + '°', padL + f * plotW, padT + plotH + 4);
+      }
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(maxC), padL - 4, padT + 4);
+      ctx.fillText('0', padL - 4, padT + plotH);
+    })();
+
+    // -- CDF --
+    (function cdf() {
+      const { ctx, w, h } = setup2d('cdf', 130);
+      const padL = 30, padB = 18, padT = 8, padR = 8;
+      const plotW = w - padL - padR, plotH = h - padT - padB;
+      const sorted = Float32Array.from(tempsC).sort();
+      const N = sorted.length;
+      // grid
+      ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+      for (const f of [0, 0.5, 1]) {
+        const y = padT + (1 - f) * plotH;
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+      }
+      // curve
+      ctx.strokeStyle = '#e8a13a'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      const steps = 160;
+      for (let s = 0; s <= steps; s++) {
+        const idx = Math.min(N - 1, Math.floor(s / steps * (N - 1)));
+        const tval = sorted[idx];
+        const x = padL + ((tval - dMin) / (dMax - dMin)) * plotW;
+        const y = padT + (1 - idx / (N - 1)) * plotH;
+        s === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = AXIS;
+      ctx.beginPath();
+      ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH);
+      ctx.stroke();
+      axisText(ctx);
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText('100%', padL - 4, padT); ctx.fillText('0%', padL - 4, padT + plotH);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      for (const f of [0, 1]) ctx.fillText((dMin + f * (dMax - dMin)).toFixed(0) + '°', padL + f * plotW, padT + plotH + 4);
+    })();
+
+    // -- latitude profile (mean temp per band + min/max envelope) --
+    (function latitude() {
+      const { ctx, w, h } = setup2d('lat', 150);
+      const padL = 30, padB = 18, padT = 8, padR = 8;
+      const plotW = w - padL - padR, plotH = h - padT - padB;
+      const nb = 24;
+      const bSum = new Float64Array(nb), bCnt = new Int32Array(nb);
+      const bMin = new Float64Array(nb).fill(Infinity), bMax = new Float64Array(nb).fill(-Infinity);
+      for (let i = 0; i < dirs.length; i++) {
+        const lat = Math.asin(Math.max(-1, Math.min(1, dirs[i].y))); // -pi/2..pi/2
+        let b = Math.floor((lat + Math.PI / 2) / Math.PI * nb);
+        if (b >= nb) b = nb - 1; if (b < 0) b = 0;
+        const t = tempsC[i];
+        bSum[b] += t; bCnt[b]++;
+        if (t < bMin[b]) bMin[b] = t; if (t > bMax[b]) bMax[b] = t;
+      }
+      const yFor = (t) => padT + (1 - (t - dMin) / (dMax - dMin)) * plotH;
+      const xFor = (b) => padL + (b + 0.5) / nb * plotW;
+      // envelope
+      ctx.fillStyle = 'rgba(232,161,59,0.15)';
+      ctx.beginPath();
+      let started = false;
+      for (let b = 0; b < nb; b++) { if (!bCnt[b]) continue; const x = xFor(b), y = yFor(bMax[b]); started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true); }
+      for (let b = nb - 1; b >= 0; b--) { if (!bCnt[b]) continue; ctx.lineTo(xFor(b), yFor(bMin[b])); }
+      ctx.closePath(); ctx.fill();
+      // mean line
+      ctx.strokeStyle = '#e8a13a'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); started = false;
+      for (let b = 0; b < nb; b++) {
+        if (!bCnt[b]) continue;
+        const x = xFor(b), y = yFor(bSum[b] / bCnt[b]);
+        started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = AXIS; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH);
+      ctx.stroke();
+      axisText(ctx);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText('S', padL, padT + plotH + 4);
+      ctx.fillText('eq', padL + plotW / 2, padT + plotH + 4);
+      ctx.fillText('N', padL + plotW, padT + plotH + 4);
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText(dMax.toFixed(0) + '°', padL - 4, padT);
+      ctx.fillText(dMin.toFixed(0) + '°', padL - 4, padT + plotH);
+    })();
+
+    // -- equirectangular heatmap (smooth field sample) --
+    (function heatmap() {
+      const c = document.getElementById('heat');
+      const cssW = c.clientWidth || 348;
+      const cssH = Math.round(cssW / 2);
+      c.style.height = cssH + 'px';
+      const W = Math.min(360, cssW), H = Math.round(W / 2);
+      c.width = W; c.height = H;
+      const ctx = c.getContext('2d');
+      const img = ctx.createImageData(W, H);
+      const p = new THREE.Vector3();
+      const col = [0, 0, 0];
+      for (let py = 0; py < H; py++) {
+        const lat = Math.PI / 2 - (py / H) * Math.PI;
+        const cl = Math.cos(lat), sl = Math.sin(lat);
+        for (let px = 0; px < W; px++) {
+          const lon = (px / W) * 2 * Math.PI - Math.PI;
+          p.set(cl * Math.cos(lon), sl, cl * Math.sin(lon));
+          colorForNorm(normLinear(temperatureAt(p)), col);
+          const o = (py * W + px) * 4;
+          img.data[o] = col[0] * 255; img.data[o + 1] = col[1] * 255;
+          img.data[o + 2] = col[2] * 255; img.data[o + 3] = 255;
+        }
+      }
+      // draw at native res then let CSS scale up for a clean fit
+      const tmp = document.createElement('canvas');
+      tmp.width = W; tmp.height = H;
+      tmp.getContext('2d').putImageData(img, 0, 0);
+      c.width = cssW; c.height = cssH;
+      const dctx = c.getContext('2d');
+      dctx.imageSmoothingEnabled = true;
+      dctx.drawImage(tmp, 0, 0, cssW, cssH);
+      document.getElementById('hl-min').textContent = dMin.toFixed(0) + '°';
+      document.getElementById('hl-max').textContent = dMax.toFixed(0) + '°';
+    })();
+
+    // ====================================================================
+    // intersecting slice plane + cross-section
+    // ====================================================================
+    const sliceN = 360;
+
+    // translucent cutting plane (with a brighter border)
+    const planeGeo = new THREE.PlaneGeometry(3.2, 3.2);
+    const planeMesh = new THREE.Mesh(planeGeo, new THREE.MeshBasicMaterial({
+      color: 0x9cc4ff, transparent: true, opacity: 0.10,
+      side: THREE.DoubleSide, depthWrite: false,
+    }));
+    planeMesh.add(new THREE.LineSegments(
+      new THREE.EdgesGeometry(planeGeo),
+      new THREE.LineBasicMaterial({ color: 0x9cc4ff, transparent: true, opacity: 0.35 })
+    ));
+    scene.add(planeMesh);
+
+    // intersection loop, colored by temperature
+    const linePos = new Float32Array(sliceN * 3);
+    const lineCol = new Float32Array(sliceN * 3);
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(linePos, 3));
+    lineGeo.setAttribute('color', new THREE.BufferAttribute(lineCol, 3));
+    const sliceLine = new THREE.LineLoop(lineGeo, new THREE.LineBasicMaterial({ vertexColors: true }));
+    scene.add(sliceLine);
+
+    const _n = new THREE.Vector3(), _u = new THREE.Vector3(), _w = new THREE.Vector3(),
+          _c = new THREE.Vector3(), _m = new THREE.Vector3(), _p = new THREE.Vector3(),
+          _up = new THREE.Vector3(0, 1, 0), _z = new THREE.Vector3(0, 0, 1),
+          _q = new THREE.Quaternion();
+
+    // signed distance: |point| - surface radius, along c + rho*m
+    function fAt(c, m, rho) {
+      const x = c.x + m.x * rho, y = c.y + m.y * rho, z = c.z + m.z * rho;
+      const len = Math.hypot(x, y, z) || 1e-6;
+      _p.set(x / len, y / len, z / len);
+      return len - rockHeight(_p);
+    }
+    // first inside->outside crossing of the surface in direction m from c
+    function surfaceCrossing(c, m) {
+      let prev = 0.02, pf = fAt(c, m, 0.02);
+      for (let rho = 0.06; rho <= 3.0; rho += 0.04) {
+        const f = fAt(c, m, rho);
+        if (pf < 0 && f >= 0) {
+          let a = prev, b = rho, fa = pf;
+          for (let k = 0; k < 24; k++) {
+            const mid = (a + b) / 2, fm = fAt(c, m, mid);
+            if ((fa < 0) === (fm < 0)) { a = mid; fa = fm; } else { b = mid; }
+          }
+          return (a + b) / 2;
+        }
+        prev = rho; pf = f;
+      }
+      return NaN;
+    }
+
+    const sliceDeg = new Float32Array(sliceN);
+    const sliceNorm = new Float32Array(sliceN);
+
+    const azI = document.getElementById('c-az'), elI = document.getElementById('c-el'),
+          offI = document.getElementById('c-off'), showC = document.getElementById('c-show');
+    const vAz = document.getElementById('v-az'), vEl = document.getElementById('v-el'),
+          vOff = document.getElementById('v-off');
+    const sMeanEl = document.getElementById('s-mean'), sMinEl = document.getElementById('s-min'),
+          sMaxEl = document.getElementById('s-max'), sLenEl = document.getElementById('s-len');
+
+    function recomputeSlice() {
+      const az = (+azI.value) * Math.PI / 180;
+      const el = (+elI.value) * Math.PI / 180;
+      const off = +offI.value;
+      vAz.textContent = azI.value + '°'; vEl.textContent = elI.value + '°';
+      vOff.textContent = off.toFixed(2);
+
+      _n.set(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
+      const ref = Math.abs(_n.y) > 0.99 ? _z : _up;
+      _u.crossVectors(ref, _n).normalize();
+      _w.crossVectors(_n, _u).normalize();
+      _c.copy(_n).multiplyScalar(off);
+
+      let sMin = Infinity, sMax = -Infinity, sSum = 0, len = 0, lastRho = 1.0;
+      let fx = 0, fy = 0, fz = 0, px = 0, py = 0, pz = 0;
+      for (let i = 0; i < sliceN; i++) {
+        const th = i / sliceN * Math.PI * 2, ct = Math.cos(th), st = Math.sin(th);
+        _m.set(_u.x * ct + _w.x * st, _u.y * ct + _w.y * st, _u.z * ct + _w.z * st);
+        let rho = surfaceCrossing(_c, _m);
+        if (!isFinite(rho)) rho = lastRho; else lastRho = rho;
+
+        const x = _c.x + _m.x * rho, y = _c.y + _m.y * rho, z = _c.z + _m.z * rho;
+        const L = Math.hypot(x, y, z) || 1e-6;
+        _p.set(x / L, y / L, z / L);
+        const raw = temperatureAt(_p);
+        const norm = normLinear(raw), degC = toCelsius(raw);
+        sliceDeg[i] = degC; sliceNorm[i] = norm;
+
+        const s = 1.006; // lift the loop just off the surface so it reads
+        linePos[i * 3] = x * s; linePos[i * 3 + 1] = y * s; linePos[i * 3 + 2] = z * s;
+        colorForNorm(norm, rgb);
+        lineCol[i * 3] = rgb[0]; lineCol[i * 3 + 1] = rgb[1]; lineCol[i * 3 + 2] = rgb[2];
+
+        if (degC < sMin) sMin = degC; if (degC > sMax) sMax = degC; sSum += degC;
+        if (i === 0) { fx = x; fy = y; fz = z; }
+        else len += Math.hypot(x - px, y - py, z - pz);
+        px = x; py = y; pz = z;
+      }
+      len += Math.hypot(px - fx, py - fy, pz - fz);
+
+      lineGeo.attributes.position.needsUpdate = true;
+      lineGeo.attributes.color.needsUpdate = true;
+      lineGeo.computeBoundingSphere();
+
+      _q.setFromUnitVectors(_z, _n);
+      planeMesh.quaternion.copy(_q);
+      planeMesh.position.copy(_c);
+
+      sMeanEl.textContent = (sSum / sliceN).toFixed(1) + '°';
+      sMinEl.textContent = sMin.toFixed(1) + '°';
+      sMaxEl.textContent = sMax.toFixed(1) + '°';
+      sLenEl.textContent = len.toFixed(2);
+
+      drawCrossSection();
+    }
+
+    function drawCrossSection() {
+      const { ctx, w, h } = setup2d('xsec', 140);
+      const padL = 30, padB = 18, padT = 8, padR = 8;
+      const plotW = w - padL - padR, plotH = h - padT - padB;
+      const yFor = (d) => padT + (1 - (d - dMin) / (dMax - dMin)) * plotH;
+      const xFor = (i) => padL + i / (sliceN - 1) * plotW;
+
+      ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+      for (const f of [0, 0.5, 1]) {
+        const y = padT + (1 - f) * plotH;
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+      }
+      ctx.lineWidth = 1.6;
+      for (let i = 1; i < sliceN; i++) {
+        ctx.strokeStyle = cssColorForNorm(sliceNorm[i]);
+        ctx.beginPath();
+        ctx.moveTo(xFor(i - 1), yFor(sliceDeg[i - 1]));
+        ctx.lineTo(xFor(i), yFor(sliceDeg[i]));
+        ctx.stroke();
+      }
+      ctx.strokeStyle = AXIS; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH);
+      ctx.stroke();
+      axisText(ctx);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText('0°', padL, padT + plotH + 4);
+      ctx.fillText('180°', padL + plotW / 2, padT + plotH + 4);
+      ctx.fillText('360°', padL + plotW, padT + plotH + 4);
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText(dMax.toFixed(0) + '°', padL - 4, padT);
+      ctx.fillText(dMin.toFixed(0) + '°', padL - 4, padT + plotH);
+    }
+
+    [azI, elI, offI].forEach((el) => el.addEventListener('input', recomputeSlice));
+    showC.addEventListener('change', () => {
+      planeMesh.visible = showC.checked;
+      sliceLine.visible = showC.checked;
+    });
+    recomputeSlice();
+  </script>
+</body>
+</html>
