@@ -305,8 +305,17 @@
     window.addEventListener('resize', resize);
     resize();
 
-    renderer.setAnimationLoop(() => {
+    let screwGroup = null, screwSpin = 0, lastReadout = 0;
+    const SPIN_RATE = 0.006; // rad/frame, opposite the rock's auto-rotation
+    renderer.setAnimationLoop((time) => {
       controls.update();
+      if (screwGroup && screwGroup.visible) {
+        screwSpin -= SPIN_RATE;
+        screwGroup.setRotationFromAxisAngle(_A, screwSpin);
+        // re-sample the field at the screw's current orientation so the thread
+        // colors and the unwound graph track what it's passing over
+        if (time - lastReadout > 45) { lastReadout = time; updateScrewReadout(); }
+      }
       renderer.render(scene, camera);
     });
 
@@ -716,10 +725,17 @@
     const axisLine = new THREE.Line(axisGeo, new THREE.LineBasicMaterial({
       color: 0xcdd3de, transparent: true, opacity: 0.5,
     }));
-    scene.add(axisLine);
+
+    // group the screw parts so they can counter-rotate together about the axis
+    screwGroup = new THREE.Group();
+    screwGroup.add(spiralLine, helicoid, axisLine);
+    scene.add(screwGroup);
 
     const spiralDeg = new Float32Array(MAXP);
     const spiralNorm = new Float32Array(MAXP);
+    const spiralDirX = new Float32Array(MAXP);  // base (unrotated) sample directions
+    const spiralDirY = new Float32Array(MAXP);
+    const spiralDirZ = new Float32Array(MAXP);
     const _A = new THREE.Vector3(), _B = new THREE.Vector3(), _C = new THREE.Vector3(),
           _pt = new THREE.Vector3();
 
@@ -760,6 +776,7 @@
         const ox = _A.x * a + dx * R_OUT, oy = _A.y * a + dy * R_OUT, oz = _A.z * a + dz * R_OUT;
         const L = Math.hypot(ox, oy, oz) || 1e-6;
         _pt.set(ox / L, oy / L, oz / L);      // direction -> surface temperature
+        spiralDirX[i] = _pt.x; spiralDirY[i] = _pt.y; spiralDirZ[i] = _pt.z;
         const raw = temperatureAt(_pt);
         const norm = normLinear(raw);
         spiralDeg[i] = toCelsius(raw); spiralNorm[i] = norm;
@@ -828,10 +845,25 @@
       ctx.fillText(dMin.toFixed(0) + '°', padL - 4, padT + plotH);
     }
 
+    // re-sample temperature at the screw's current (spun) orientation, recolor
+    // the thread, and redraw the unwound graph
+    const _qSpin = new THREE.Quaternion(), _v = new THREE.Vector3();
+    function updateScrewReadout() {
+      _qSpin.setFromAxisAngle(_A, screwSpin);
+      for (let i = 0; i < spiralCount; i++) {
+        _v.set(spiralDirX[i], spiralDirY[i], spiralDirZ[i]).applyQuaternion(_qSpin);
+        const raw = temperatureAt(_v);
+        const norm = normLinear(raw);
+        spiralDeg[i] = toCelsius(raw); spiralNorm[i] = norm;
+        colorForNorm(norm, rgb);
+        spiralCol[i * 3] = rgb[0]; spiralCol[i * 3 + 1] = rgb[1]; spiralCol[i * 3 + 2] = rgb[2];
+      }
+      spiralGeo.attributes.color.needsUpdate = true;
+      drawUnwound();
+    }
+
     [spAz, spEl, spTurns].forEach((el) => el.addEventListener('input', recomputeSpiral));
-    spShow.addEventListener('change', () => {
-      spiralLine.visible = helicoid.visible = axisLine.visible = spShow.checked;
-    });
+    spShow.addEventListener('change', () => { screwGroup.visible = spShow.checked; });
     recomputeSpiral();
   </script>
 </body>
