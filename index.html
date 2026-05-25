@@ -108,6 +108,20 @@
       </div>
 
       <div class="section">
+        <h2>Spiral sweep (screw)</h2>
+        <label class="toggle"><input type="checkbox" id="sp-show" checked> show screw &amp; axis</label>
+        <div class="controls">
+          <div class="ctrl"><span>axis az</span><input type="range" id="sp-az" min="0" max="360" value="0"><span class="v" id="vp-az">0°</span></div>
+          <div class="ctrl"><span>axis el</span><input type="range" id="sp-el" min="-90" max="90" value="90"><span class="v" id="vp-el">90°</span></div>
+          <div class="ctrl"><span>turns</span><input type="range" id="sp-turns" min="1" max="40" value="12"><span class="v" id="vp-turns">12</span></div>
+        </div>
+        <canvas class="chart" id="unwind"></canvas>
+        <div class="slice-stats">
+          <span>unwound, pole&nbsp;&rarr;&nbsp;pole · <b id="sp-info">—</b></span>
+        </div>
+      </div>
+
+      <div class="section">
         <h2>Distribution</h2>
         <canvas class="chart" id="histo"></canvas>
       </div>
@@ -663,6 +677,162 @@
       sliceLine.visible = showC.checked;
     });
     recomputeSlice();
+
+    // ====================================================================
+    // spiral sweep ("screw") — a helix wound around a central axis, lying on
+    // the surface from pole to pole, then unwound into a single 1D trace.
+    // ====================================================================
+    const MAXP = 4001;       // max spiral samples
+
+    const spiralPos = new Float32Array(MAXP * 3);
+    const spiralCol = new Float32Array(MAXP * 3);
+    const spiralGeo = new THREE.BufferGeometry();
+    spiralGeo.setAttribute('position', new THREE.BufferAttribute(spiralPos, 3));
+    spiralGeo.setAttribute('color', new THREE.BufferAttribute(spiralCol, 3));
+    const spiralLine = new THREE.Line(spiralGeo, new THREE.LineBasicMaterial({ vertexColors: true }));
+    scene.add(spiralLine);
+
+    // translucent helicoid ribbon — the surface the screw sweeps. Two vertices
+    // per sample (inner edge on the axis, outer edge just past the surface).
+    const heliPos = new Float32Array(MAXP * 2 * 3);
+    const heliIdx = new Uint32Array((MAXP - 1) * 6);
+    for (let i = 0; i < MAXP - 1; i++) {
+      const a = 2 * i, b = 2 * i + 1, c = 2 * i + 2, d = 2 * i + 3, o = i * 6;
+      heliIdx[o] = a; heliIdx[o + 1] = b; heliIdx[o + 2] = d;
+      heliIdx[o + 3] = a; heliIdx[o + 4] = d; heliIdx[o + 5] = c;
+    }
+    const heliGeo = new THREE.BufferGeometry();
+    heliGeo.setAttribute('position', new THREE.BufferAttribute(heliPos, 3));
+    heliGeo.setIndex(new THREE.BufferAttribute(heliIdx, 1));
+    const helicoid = new THREE.Mesh(heliGeo, new THREE.MeshBasicMaterial({
+      color: 0x9cc4ff, transparent: true, opacity: 0.10,
+      side: THREE.DoubleSide, depthWrite: false,
+    }));
+    scene.add(helicoid);
+
+    const axisPos = new Float32Array(2 * 3);
+    const axisGeo = new THREE.BufferGeometry();
+    axisGeo.setAttribute('position', new THREE.BufferAttribute(axisPos, 3));
+    const axisLine = new THREE.Line(axisGeo, new THREE.LineBasicMaterial({
+      color: 0xcdd3de, transparent: true, opacity: 0.5,
+    }));
+    scene.add(axisLine);
+
+    const spiralDeg = new Float32Array(MAXP);
+    const spiralNorm = new Float32Array(MAXP);
+    const _A = new THREE.Vector3(), _B = new THREE.Vector3(), _C = new THREE.Vector3(),
+          _pt = new THREE.Vector3();
+
+    const spAz = document.getElementById('sp-az'), spEl = document.getElementById('sp-el'),
+          spTurns = document.getElementById('sp-turns'), spShow = document.getElementById('sp-show');
+    const vpAz = document.getElementById('vp-az'), vpEl = document.getElementById('vp-el'),
+          vpTurns = document.getElementById('vp-turns'), spInfo = document.getElementById('sp-info');
+
+    let spiralCount = 0, spiralTurns = 12;
+
+    function recomputeSpiral() {
+      const az = (+spAz.value) * Math.PI / 180;
+      const el = (+spEl.value) * Math.PI / 180;
+      const N = +spTurns.value;
+      vpAz.textContent = spAz.value + '°'; vpEl.textContent = spEl.value + '°';
+      vpTurns.textContent = String(N);
+      spiralTurns = N;
+
+      _A.set(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
+      const ref = Math.abs(_A.y) > 0.99 ? _z : _up;
+      _B.crossVectors(ref, _A).normalize();
+      _C.crossVectors(_A, _B).normalize();
+
+      const nPts = Math.max(200, Math.min(MAXP, Math.round(N * 80)));
+      spiralCount = nPts;
+      const R_OUT = 1.6, H = 1.3; // consistent screw radius + axial half-length
+
+      for (let i = 0; i < nPts; i++) {
+        const s = i / (nPts - 1);
+        const th = 2 * Math.PI * N * s;
+        const ct = Math.cos(th), st = Math.sin(th);
+        const a = (2 * s - 1) * H;            // axial position (constant pitch)
+        const dx = _B.x * ct + _C.x * st;     // unit perpendicular direction
+        const dy = _B.y * ct + _C.y * st;
+        const dz = _B.z * ct + _C.z * st;
+
+        // outer rim held at a consistent distance R_OUT from the axis
+        const ox = _A.x * a + dx * R_OUT, oy = _A.y * a + dy * R_OUT, oz = _A.z * a + dz * R_OUT;
+        const L = Math.hypot(ox, oy, oz) || 1e-6;
+        _pt.set(ox / L, oy / L, oz / L);      // direction -> surface temperature
+        const raw = temperatureAt(_pt);
+        const norm = normLinear(raw);
+        spiralDeg[i] = toCelsius(raw); spiralNorm[i] = norm;
+
+        spiralPos[i * 3] = ox; spiralPos[i * 3 + 1] = oy; spiralPos[i * 3 + 2] = oz;
+        colorForNorm(norm, rgb);
+        spiralCol[i * 3] = rgb[0]; spiralCol[i * 3 + 1] = rgb[1]; spiralCol[i * 3 + 2] = rgb[2];
+
+        // helicoid: inner edge on the axis, outer edge on the rim
+        const ix = _A.x * a, iy = _A.y * a, iz = _A.z * a;
+        heliPos[(2 * i) * 3] = ix; heliPos[(2 * i) * 3 + 1] = iy; heliPos[(2 * i) * 3 + 2] = iz;
+        heliPos[(2 * i + 1) * 3] = ox; heliPos[(2 * i + 1) * 3 + 1] = oy; heliPos[(2 * i + 1) * 3 + 2] = oz;
+      }
+
+      spiralGeo.setDrawRange(0, nPts);
+      spiralGeo.attributes.position.needsUpdate = true;
+      spiralGeo.attributes.color.needsUpdate = true;
+      spiralGeo.computeBoundingSphere();
+      heliGeo.setDrawRange(0, (nPts - 1) * 6);
+      heliGeo.attributes.position.needsUpdate = true;
+      heliGeo.computeBoundingSphere();
+
+      axisPos[0] = -_A.x * 2.4; axisPos[1] = -_A.y * 2.4; axisPos[2] = -_A.z * 2.4;
+      axisPos[3] = _A.x * 2.4; axisPos[4] = _A.y * 2.4; axisPos[5] = _A.z * 2.4;
+      axisGeo.attributes.position.needsUpdate = true;
+      axisGeo.computeBoundingSphere();
+
+      spInfo.textContent = `${N} turns · ${nPts} samples`;
+      drawUnwound();
+    }
+
+    function drawUnwound() {
+      const { ctx, w, h } = setup2d('unwind', 120);
+      const padL = 30, padB = 18, padT = 8, padR = 8;
+      const plotW = w - padL - padR, plotH = h - padT - padB;
+      const yFor = (d) => padT + (1 - (d - dMin) / (dMax - dMin)) * plotH;
+      const xFor = (i) => padL + i / (spiralCount - 1) * plotW;
+
+      // light dividers marking each screw turn
+      ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+      for (let k = 1; k < spiralTurns; k++) {
+        const x = padL + (k / spiralTurns) * plotW;
+        ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+      }
+
+      ctx.lineWidth = 1.4;
+      for (let i = 1; i < spiralCount; i++) {
+        ctx.strokeStyle = cssColorForNorm(spiralNorm[i]);
+        ctx.beginPath();
+        ctx.moveTo(xFor(i - 1), yFor(spiralDeg[i - 1]));
+        ctx.lineTo(xFor(i), yFor(spiralDeg[i]));
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = AXIS; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH);
+      ctx.stroke();
+      axisText(ctx);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText('S', padL, padT + plotH + 4);
+      ctx.textAlign = 'right';
+      ctx.fillText('N', padL + plotW, padT + plotH + 4);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(dMax.toFixed(0) + '°', padL - 4, padT);
+      ctx.fillText(dMin.toFixed(0) + '°', padL - 4, padT + plotH);
+    }
+
+    [spAz, spEl, spTurns].forEach((el) => el.addEventListener('input', recomputeSpiral));
+    spShow.addEventListener('change', () => {
+      spiralLine.visible = helicoid.visible = axisLine.visible = spShow.checked;
+    });
+    recomputeSpiral();
   </script>
 </body>
 </html>

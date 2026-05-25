@@ -14,6 +14,9 @@ surface-temperature field, plus a live analytics dashboard.
 - **Slice plane** — an adjustable cutting plane (azimuth / elevation / offset).
   Where it intersects the surface, a cross-section chart shows temperature around
   the intersection loop in real time.
+- **Spiral sweep ("screw")** — a constant-radius helicoid wound around an
+  adjustable central axis. Its thread samples the temperature field; "unwinding"
+  the spiral lays the whole sweep out as a single 1D trace (with per-turn dividers).
 
 ## Running it
 
